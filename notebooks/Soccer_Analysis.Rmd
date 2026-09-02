@@ -1,0 +1,961 @@
+---
+title: "427Project_R_Saxton_McKechnie"
+author: "Adam Saxton"
+date: "2025-12-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load Libraries
+library(readxl)
+library(randomForest)
+library(dplyr)
+library(pROC)
+library(caret)
+library(ggplot2) 
+library(rpart)
+library(rpart.plot)
+require("ggfortify")
+
+#Load Data
+team <- read_excel("Soccer_Data.xlsx", sheet = 2)
+player <- read_excel("Soccer_Data.xlsx", sheet = 1)
+
+colnames(team)
+colnames(player)
+
+# Success = Top 10 Standing
+player$Success <- ifelse(player$Standing <= 10, 1, 0)
+player$Success <- as.factor(player$Success)
+team$Success <- ifelse(team$teamRank <= 10, 1, 0)
+
+```
+
+```{r}
+# ALL appearances
+
+# Select Numeric Predictors
+columns_to_keep <- c("Success", "totalGoals_value", "goalAssists_value", 
+                     "yellowCards_value", "redCards_value", "appearances_value", 
+                     "totalShots_value", "shotsOnTarget_value", "saves_value", 
+                     "subIns_value", "foulsCommitted_value", "foulsSuffered_value",
+                     "ownGoals_value", "offsides_value", 
+                     "goalsConceded_value", "shotsFaced_value")
+
+# Clean Data
+player_data_ready <- player %>% select(all_of(columns_to_keep)) %>% na.omit()
+X <- player_data_ready %>% select(-Success)
+Y <- player_data_ready$Success
+
+# Factorize explicitly (c0 vs c1)
+Y <- paste0("c", Y)
+Y <- as.factor(Y)
+data <- data.frame(X, Success = Y)
+
+# Split Training/Testing
+set.seed(123)
+train.ix <- sample(nrow(data), floor(nrow(data)/2))
+training_data <- data[train.ix,]
+testing_data <- data[-train.ix,]
+
+#Random Forest
+
+# Fit the Model
+full_random_forest <- randomForest(Success ~ ., data = training_data, 
+                                   ntree = 250, nodesize = 20, mtry = 5)
+print(full_random_forest)
+
+
+#Extract values
+imp_vals <- importance(full_random_forest)
+importance_data <- data.frame(feature = row.names(imp_vals), 
+                              importance = imp_vals[,1]) # Using MeanDecreaseGini (or Accuracy if importance=TRUE)
+
+importance_data$feature <- factor(importance_data$feature, 
+                                  levels = importance_data$feature[order(importance_data$importance)])
+
+# A. Plot Top 20 Factors (Purple Chart)
+top_n <- min(20, nrow(importance_data)) 
+top_twenty <- importance_data[order(importance_data$importance, decreasing = TRUE), ][1:top_n, ]
+
+ggplot(top_twenty, aes(x = feature, y = importance)) + 
+  geom_bar(stat = "identity", fill = "purple", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Top Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+# B. Plot Bottom 20 Factors (Gold Chart)
+bottom_twenty <- importance_data[order(importance_data$importance, decreasing = FALSE), ][1:top_n, ]
+
+ggplot(bottom_twenty, aes(x = reorder(feature, -importance), y = importance)) + 
+  geom_bar(stat = "identity", fill = "gold", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Bottom Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+#Error & Prediction
+
+# OOB Error
+print(paste("OOB Error Rate:", mean(full_random_forest$err.rate[,"OOB"])))
+
+# Confusion Matrix
+y_hat_class <- predict(full_random_forest, testing_data, type = "class")
+print(confusionMatrix(y_hat_class, testing_data$Success))
+
+# ROC Curve
+y_hat_vote <- predict(full_random_forest, testing_data, type = "vote")
+plot(roc(testing_data$Success, y_hat_vote[,"c1"]), 
+     col="green", main = "ROC Curve: Soccer Success")
+
+# 10-Fold Cross Validation 
+
+n_folds = 10
+N <- nrow(training_data)
+folds_i <- sample(rep(1:n_folds, length.out = N))
+cv_acc <- numeric(n_folds)
+
+
+for (k in 1:n_folds) {
+  test_i <- which(folds_i == k)
+  training_data.cv <- training_data[-test_i, ]
+  testing_data.cv <- training_data[test_i, ] 
+  
+  rf.cv <- randomForest(Success ~ ., data = training_data.cv, ntree = 200)
+  
+  y_hat_cv <- predict(rf.cv, testing_data.cv, type="class")
+  
+  # Calculate Accuracy
+  cm <- confusionMatrix(y_hat_cv, testing_data.cv$Success)
+  cv_acc[k] <- cm$overall["Accuracy"]
+}
+
+cm
+print(paste("Mean CV Accuracy:", round(mean(cv_acc), 4)))
+```
+```{r}
+# >10 appearances
+
+player_adj_10 <- player %>%
+  filter(appearances_value >= 10)
+
+# Select Numeric Predictors
+columns_to_keep <- c("Success", "totalGoals_value", "goalAssists_value", 
+                     "yellowCards_value", "redCards_value", "appearances_value", 
+                     "totalShots_value", "shotsOnTarget_value", "saves_value", 
+                     "subIns_value", "foulsCommitted_value", "foulsSuffered_value",
+                     "ownGoals_value", "offsides_value", 
+                     "goalsConceded_value", "shotsFaced_value")
+
+# Clean Data
+player_data_ready <- player_adj_10 %>% select(all_of(columns_to_keep)) %>% na.omit()
+X <- player_data_ready %>% select(-Success)
+Y <- player_data_ready$Success
+
+# Factorize explicitly (c0 vs c1)
+Y <- paste0("c", Y)
+Y <- as.factor(Y)
+data <- data.frame(X, Success = Y)
+
+# Split Training/Testing
+set.seed(123)
+train.ix <- sample(nrow(data), floor(nrow(data)/2))
+training_data <- data[train.ix,]
+testing_data <- data[-train.ix,]
+
+#Random Forest
+
+# Fit the Model
+full_random_forest <- randomForest(Success ~ ., data = training_data, 
+                                   ntree = 250, nodesize = 20, mtry = 5)
+print(full_random_forest)
+
+
+#Extract values
+imp_vals <- importance(full_random_forest)
+importance_data <- data.frame(feature = row.names(imp_vals), 
+                              importance = imp_vals[,1]) # Using MeanDecreaseGini (or Accuracy if importance=TRUE)
+
+importance_data$feature <- factor(importance_data$feature, 
+                                  levels = importance_data$feature[order(importance_data$importance)])
+
+# A. Plot Top 20 Factors (Purple Chart)
+top_n <- min(20, nrow(importance_data)) 
+top_twenty <- importance_data[order(importance_data$importance, decreasing = TRUE), ][1:top_n, ]
+
+ggplot(top_twenty, aes(x = feature, y = importance)) + 
+  geom_bar(stat = "identity", fill = "purple", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Top Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+# B. Plot Bottom 20 Factors (Gold Chart)
+bottom_twenty <- importance_data[order(importance_data$importance, decreasing = FALSE), ][1:top_n, ]
+
+ggplot(bottom_twenty, aes(x = reorder(feature, -importance), y = importance)) + 
+  geom_bar(stat = "identity", fill = "gold", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Bottom Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+#Error & Prediction
+
+# OOB Error
+print(paste("OOB Error Rate:", mean(full_random_forest$err.rate[,"OOB"])))
+
+# Confusion Matrix
+y_hat_class <- predict(full_random_forest, testing_data, type = "class")
+print(confusionMatrix(y_hat_class, testing_data$Success))
+
+# ROC Curve
+y_hat_vote <- predict(full_random_forest, testing_data, type = "vote")
+plot(roc(testing_data$Success, y_hat_vote[,"c1"]), 
+     col="green", main = "ROC Curve: Soccer Success")
+
+# 10-Fold Cross Validation 
+
+n_folds = 10
+N <- nrow(training_data)
+folds_i <- sample(rep(1:n_folds, length.out = N))
+cv_acc <- numeric(n_folds)
+
+
+for (k in 1:n_folds) {
+  test_i <- which(folds_i == k)
+  training_data.cv <- training_data[-test_i, ]
+  testing_data.cv <- training_data[test_i, ] 
+  
+  rf.cv <- randomForest(Success ~ ., data = training_data.cv, ntree = 200)
+  
+  y_hat_cv <- predict(rf.cv, testing_data.cv, type="class")
+  
+  # Calculate Accuracy
+  cm <- confusionMatrix(y_hat_cv, testing_data.cv$Success)
+  cv_acc[k] <- cm$overall["Accuracy"]
+}
+
+
+print(">10 Appearances")
+cm
+print(paste("Mean CV Accuracy:", round(mean(cv_acc), 4)))
+```
+```{r}
+# >3 appearances
+
+player_adj_3 <- player %>%
+  filter(appearances_value >= 3)
+
+# Select Numeric Predictors
+columns_to_keep <- c("Success", "totalGoals_value", "goalAssists_value", 
+                     "yellowCards_value", "redCards_value", "appearances_value", 
+                     "totalShots_value", "shotsOnTarget_value", "saves_value", 
+                     "subIns_value", "foulsCommitted_value", "foulsSuffered_value",
+                     "ownGoals_value", "offsides_value", 
+                     "goalsConceded_value", "shotsFaced_value")
+
+# Clean Data
+player_data_ready <- player_adj_3 %>% select(all_of(columns_to_keep)) %>% na.omit()
+X <- player_data_ready %>% select(-Success)
+Y <- player_data_ready$Success
+
+# Factorize explicitly (c0 vs c1)
+Y <- paste0("c", Y)
+Y <- as.factor(Y)
+data <- data.frame(X, Success = Y)
+
+# Split Training/Testing
+set.seed(123)
+train.ix <- sample(nrow(data), floor(nrow(data)/2))
+training_data <- data[train.ix,]
+testing_data <- data[-train.ix,]
+
+#Random Forest
+
+# Fit the Model
+full_random_forest <- randomForest(Success ~ ., data = training_data, 
+                                   ntree = 250, nodesize = 20, mtry = 5)
+print(full_random_forest)
+
+
+#Extract values
+imp_vals <- importance(full_random_forest)
+importance_data <- data.frame(feature = row.names(imp_vals), 
+                              importance = imp_vals[,1]) # Using MeanDecreaseGini (or Accuracy if importance=TRUE)
+
+importance_data$feature <- factor(importance_data$feature, 
+                                  levels = importance_data$feature[order(importance_data$importance)])
+
+# A. Plot Top 20 Factors (Purple Chart)
+top_n <- min(20, nrow(importance_data)) 
+top_twenty <- importance_data[order(importance_data$importance, decreasing = TRUE), ][1:top_n, ]
+
+ggplot(top_twenty, aes(x = feature, y = importance)) + 
+  geom_bar(stat = "identity", fill = "purple", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Top Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+# B. Plot Bottom 20 Factors (Gold Chart)
+bottom_twenty <- importance_data[order(importance_data$importance, decreasing = FALSE), ][1:top_n, ]
+
+ggplot(bottom_twenty, aes(x = reorder(feature, -importance), y = importance)) + 
+  geom_bar(stat = "identity", fill = "gold", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Bottom Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+#Error & Prediction
+
+# OOB Error
+print(paste("OOB Error Rate:", mean(full_random_forest$err.rate[,"OOB"])))
+
+# Confusion Matrix
+y_hat_class <- predict(full_random_forest, testing_data, type = "class")
+print(confusionMatrix(y_hat_class, testing_data$Success))
+
+# ROC Curve
+y_hat_vote <- predict(full_random_forest, testing_data, type = "vote")
+plot(roc(testing_data$Success, y_hat_vote[,"c1"]), 
+     col="green", main = "ROC Curve: Soccer Success")
+
+# 10-Fold Cross Validation 
+
+n_folds = 10
+N <- nrow(training_data)
+folds_i <- sample(rep(1:n_folds, length.out = N))
+cv_acc <- numeric(n_folds)
+
+
+for (k in 1:n_folds) {
+  test_i <- which(folds_i == k)
+  training_data.cv <- training_data[-test_i, ]
+  testing_data.cv <- training_data[test_i, ] 
+  
+  rf.cv <- randomForest(Success ~ ., data = training_data.cv, ntree = 200)
+  
+  y_hat_cv <- predict(rf.cv, testing_data.cv, type="class")
+  
+  # Calculate Accuracy
+  cm <- confusionMatrix(y_hat_cv, testing_data.cv$Success)
+  cv_acc[k] <- cm$overall["Accuracy"]
+}
+
+print(">3 Appearances")
+cm
+print(paste("Mean CV Accuracy:", round(mean(cv_acc), 4)))
+```
+
+```{r}
+# >20 appearances
+
+player_adj_20 <- player %>%
+  filter(appearances_value >= 20)
+
+# Select Numeric Predictors
+columns_to_keep <- c("Success", "totalGoals_value", "goalAssists_value", 
+                     "yellowCards_value", "redCards_value", "appearances_value", 
+                     "totalShots_value", "shotsOnTarget_value", "saves_value", 
+                     "subIns_value", "foulsCommitted_value", "foulsSuffered_value",
+                     "ownGoals_value", "offsides_value", 
+                     "goalsConceded_value", "shotsFaced_value")
+
+# Clean Data
+player_data_ready <- player_adj_20 %>% select(all_of(columns_to_keep)) %>% na.omit()
+X <- player_data_ready %>% select(-Success)
+Y <- player_data_ready$Success
+
+# Factorize explicitly (c0 vs c1)
+Y <- paste0("c", Y)
+Y <- as.factor(Y)
+data <- data.frame(X, Success = Y)
+
+# Split Training/Testing
+set.seed(123)
+train.ix <- sample(nrow(data), floor(nrow(data)/2))
+training_data <- data[train.ix,]
+testing_data <- data[-train.ix,]
+
+#Random Forest
+
+# Fit the Model
+full_random_forest <- randomForest(Success ~ ., data = training_data, 
+                                   ntree = 250, nodesize = 20, mtry = 5)
+print(full_random_forest)
+
+
+#Extract values
+imp_vals <- importance(full_random_forest)
+importance_data <- data.frame(feature = row.names(imp_vals), 
+                              importance = imp_vals[,1]) # Using MeanDecreaseGini (or Accuracy if importance=TRUE)
+
+importance_data$feature <- factor(importance_data$feature, 
+                                  levels = importance_data$feature[order(importance_data$importance)])
+
+# A. Plot Top 20 Factors (Purple Chart)
+top_n <- min(20, nrow(importance_data)) 
+top_twenty <- importance_data[order(importance_data$importance, decreasing = TRUE), ][1:top_n, ]
+
+ggplot(top_twenty, aes(x = feature, y = importance)) + 
+  geom_bar(stat = "identity", fill = "purple", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Top Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+# B. Plot Bottom 20 Factors (Gold Chart)
+bottom_twenty <- importance_data[order(importance_data$importance, decreasing = FALSE), ][1:top_n, ]
+
+ggplot(bottom_twenty, aes(x = reorder(feature, -importance), y = importance)) + 
+  geom_bar(stat = "identity", fill = "gold", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Bottom Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+#Error & Prediction
+
+# OOB Error
+print(paste("OOB Error Rate:", mean(full_random_forest$err.rate[,"OOB"])))
+
+# Confusion Matrix
+y_hat_class <- predict(full_random_forest, testing_data, type = "class")
+print(confusionMatrix(y_hat_class, testing_data$Success))
+
+# ROC Curve
+y_hat_vote <- predict(full_random_forest, testing_data, type = "vote")
+plot(roc(testing_data$Success, y_hat_vote[,"c1"]), 
+     col="green", main = "ROC Curve: Soccer Success")
+
+# 10-Fold Cross Validation 
+
+n_folds = 10
+N <- nrow(training_data)
+folds_i <- sample(rep(1:n_folds, length.out = N))
+cv_acc <- numeric(n_folds)
+
+
+for (k in 1:n_folds) {
+  test_i <- which(folds_i == k)
+  training_data.cv <- training_data[-test_i, ]
+  testing_data.cv <- training_data[test_i, ] 
+  
+  rf.cv <- randomForest(Success ~ ., data = training_data.cv, ntree = 200)
+  
+  y_hat_cv <- predict(rf.cv, testing_data.cv, type="class")
+  
+  # Calculate Accuracy
+  cm <- confusionMatrix(y_hat_cv, testing_data.cv$Success)
+  cv_acc[k] <- cm$overall["Accuracy"]
+}
+
+print(">20 Appearances")
+cm
+print(paste("Mean CV Accuracy:", round(mean(cv_acc), 4)))
+```
+```{r}
+# >25 appearances
+
+player_adj_25 <- player %>%
+  filter(appearances_value >= 25)
+
+# Select Numeric Predictors
+columns_to_keep <- c("Success", "totalGoals_value", "goalAssists_value", 
+                     "yellowCards_value", "redCards_value", "appearances_value", 
+                     "totalShots_value", "shotsOnTarget_value", "saves_value", 
+                     "subIns_value", "foulsCommitted_value", "foulsSuffered_value",
+                     "ownGoals_value", "offsides_value", 
+                     "goalsConceded_value", "shotsFaced_value")
+
+# Clean Data
+player_data_ready <- player_adj_25 %>% select(all_of(columns_to_keep)) %>% na.omit()
+X <- player_data_ready %>% select(-Success)
+Y <- player_data_ready$Success
+
+# Factorize explicitly (c0 vs c1)
+Y <- paste0("c", Y)
+Y <- as.factor(Y)
+data <- data.frame(X, Success = Y)
+
+# Split Training/Testing
+set.seed(123)
+train.ix <- sample(nrow(data), floor(nrow(data)/2))
+training_data <- data[train.ix,]
+testing_data <- data[-train.ix,]
+
+#Random Forest
+
+# Fit the Model
+full_random_forest <- randomForest(Success ~ ., data = training_data, 
+                                   ntree = 250, nodesize = 20, mtry = 5)
+print(full_random_forest)
+
+
+#Extract values
+imp_vals <- importance(full_random_forest)
+importance_data <- data.frame(feature = row.names(imp_vals), 
+                              importance = imp_vals[,1]) # Using MeanDecreaseGini (or Accuracy if importance=TRUE)
+
+importance_data$feature <- factor(importance_data$feature, 
+                                  levels = importance_data$feature[order(importance_data$importance)])
+
+# A. Plot Top 20 Factors (Purple Chart)
+top_n <- min(20, nrow(importance_data)) 
+top_twenty <- importance_data[order(importance_data$importance, decreasing = TRUE), ][1:top_n, ]
+
+ggplot(top_twenty, aes(x = feature, y = importance)) + 
+  geom_bar(stat = "identity", fill = "purple", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Top Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+# B. Plot Bottom 20 Factors (Gold Chart)
+bottom_twenty <- importance_data[order(importance_data$importance, decreasing = FALSE), ][1:top_n, ]
+
+ggplot(bottom_twenty, aes(x = reorder(feature, -importance), y = importance)) + 
+  geom_bar(stat = "identity", fill = "gold", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Bottom Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+#Error & Prediction
+
+# OOB Error
+print(paste("OOB Error Rate:", mean(full_random_forest$err.rate[,"OOB"])))
+
+# Confusion Matrix
+y_hat_class <- predict(full_random_forest, testing_data, type = "class")
+print(confusionMatrix(y_hat_class, testing_data$Success))
+
+# ROC Curve
+y_hat_vote <- predict(full_random_forest, testing_data, type = "vote")
+plot(roc(testing_data$Success, y_hat_vote[,"c1"]), 
+     col="green", main = "ROC Curve: Soccer Success")
+
+# 10-Fold Cross Validation 
+
+n_folds = 10
+N <- nrow(training_data)
+folds_i <- sample(rep(1:n_folds, length.out = N))
+cv_acc <- numeric(n_folds)
+
+
+for (k in 1:n_folds) {
+  test_i <- which(folds_i == k)
+  training_data.cv <- training_data[-test_i, ]
+  testing_data.cv <- training_data[test_i, ] 
+  
+  rf.cv <- randomForest(Success ~ ., data = training_data.cv, ntree = 200)
+  
+  y_hat_cv <- predict(rf.cv, testing_data.cv, type="class")
+  
+  # Calculate Accuracy
+  cm <- confusionMatrix(y_hat_cv, testing_data.cv$Success)
+  cv_acc[k] <- cm$overall["Accuracy"]
+}
+
+print(">25 Appearances")
+cm
+print(paste("Mean CV Accuracy:", round(mean(cv_acc), 4)))
+```
+```{r}
+# Linear Regression GF v GA
+lm_model <- lm(teamRank ~ gf + ga, data = team)
+print("Linear Regression Summary (GF v GA)")
+summary(lm_model)
+
+# Plot 1: Team Rank vs. Goals For (GF)
+ggplot(team, aes(x = gf, y = teamRank)) +
+  geom_point(color = "darkblue", alpha = 0.7) +
+  geom_smooth(method = "lm", col = "red", se = FALSE) +
+  scale_y_reverse(limits = c(20, 1), breaks = seq(1, 20, by = 1)) +
+  labs(title = "Team Rank vs. Goals For (GF)",
+       x = "Goals For (GF)",
+       y = "Team Rank (Lower is Better)") +
+  theme_minimal()
+
+# Plot 2: Team Rank vs. Goals Against (GA)
+ggplot(team, aes(x = ga, y = teamRank)) +
+  geom_point(color = "darkgreen", alpha = 0.7) +
+  geom_smooth(method = "lm", col = "blue", se = FALSE) +
+  scale_y_reverse(limits = c(20, 1), breaks = seq(1, 20, by = 1)) +
+  labs(title = "Team Rank vs. Goals Against (GA)",
+       x = "Goals Against (GA)",
+       y = "Team Rank (Lower is Better)") +
+  theme_minimal()
+
+autoplot(lm_model, which = 1:6, ncol = 3, label.size = 5)
+```
+```{r}
+# Linear Regression Model Wins, Ties, and Losses
+lm_model_wtl <- lm(teamRank ~ wins + ties + losses, data = team)
+
+summary(lm_model_wtl)
+
+
+# Team Rank vs. Wins
+ggplot(team, aes(x = wins, y = teamRank)) +
+  geom_point(color = "darkgreen", alpha = 0.7) +
+  geom_smooth(method = "lm", col = "blue", se = FALSE) +
+  scale_y_reverse(limits = c(20, 1), breaks = seq(1, 20, by = 1)) +
+  labs(title = "Team Rank vs. Wins",
+       x = "Wins",
+       y = "Team Rank (Lower is Better)") +
+  theme_minimal()
+
+# Team Rank vs. Ties
+ggplot(team, aes(x = ties, y = teamRank)) +
+  geom_point(color = "orange", alpha = 0.7) +
+  geom_smooth(method = "lm", col = "purple", se = FALSE) +
+  scale_y_reverse(limits = c(20, 1), breaks = seq(1, 20, by = 1)) +
+  labs(title = "Team Rank vs. Ties",
+       x = "Ties",
+       y = "Team Rank (Lower is Better)") +
+  theme_minimal()
+
+# Team Rank vs. Losses
+ggplot(team, aes(x = losses, y = teamRank)) +
+  geom_point(color = "darkred", alpha = 0.7) +
+  geom_smooth(method = "lm", col = "black", se = FALSE) +
+  scale_y_reverse(limits = c(20, 1), breaks = seq(1, 20, by = 1)) +
+  labs(title = "Team Rank vs. Losses",
+       x = "Losses",
+       y = "Team Rank (Lower is Better)") +
+  theme_minimal()
+```
+```{r}
+#Clean Sheet Regression
+
+lm_cs <- lm(teamRank ~ clean_sheet, data = team)
+
+print("Linear Regression Summary (Clean Sheets)")
+summary(lm_cs)
+
+# Team Rank vs. Clean Sheets
+ggplot(team, aes(x = clean_sheet, y = teamRank)) +
+  geom_point(color = "purple", alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", col = "black", se = FALSE) +
+  scale_y_reverse(limits = c(20, 1), breaks = seq(1, 20, by = 1)) +
+  labs(title = "Impact of Clean Sheets on Team Rank",
+       x = "Total Clean Sheets",
+       y = "Team Rank (Lower is Better)") +
+  theme_minimal()
+```
+
+
+```{r}
+#IGNORE
+#Decision Tree
+tree_model <- rpart(as.factor(Success) ~ gf + ga, data = team, method = "class")
+rpart.plot(tree_model, main = "Decision Tree for Team Success", extra = 106, box.palette = "GnBu")
+print("This shows that if you score more than 56 goals in a season then you have a 55% chance of being in the top 10 standings.")
+```
+
+```{r}
+#Random Forest Team Data
+
+columns_to_keep <- c("Success", "wins", "ties", 
+                     "losses", "gf", "ga", 
+                     "gd", "clean_sheet")
+# Clean Data
+team_data_ready <- team %>% select(all_of(columns_to_keep)) %>% na.omit()
+
+X <- team_data_ready %>% select(-Success)
+Y <- team_data_ready$Success
+Y <- paste0("c", Y)
+Y <- as.factor(Y)
+
+data <- data.frame(X, Success = Y)
+
+# Split Training/Testing
+set.seed(123)
+train.ix <- sample(nrow(data), floor(nrow(data)/2))
+training_data <- data[train.ix,]
+testing_data <- data[-train.ix,]
+
+# Random Forest
+full_random_forest <- randomForest(Success ~ ., data = training_data, 
+                                   ntree = 250, nodesize = 20, mtry = 5)
+
+print(full_random_forest)
+
+
+# Extract importance values
+imp_vals <- importance(full_random_forest)
+importance_data <- data.frame(feature = row.names(imp_vals), 
+                              importance = imp_vals[,1])
+importance_data$feature <- factor(importance_data$feature, 
+                                  levels = importance_data$feature[order
+                                            (importance_data$importance)])
+
+# A. Top 20 Factors (Purple Chart)
+top_n <- min(20, nrow(importance_data)) 
+top_twenty <- importance_data[order(importance_data$importance, 
+                                    decreasing = TRUE), ][1:top_n, ]
+
+ggplot(top_twenty, aes(x = feature, y = importance)) + 
+  geom_bar(stat = "identity", fill = "purple", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Top Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+# B. Bottom 20 Factors (Gold Chart)
+bottom_twenty <- importance_data[order(importance_data$importance, 
+                                       decreasing = FALSE), ][1:top_n, ]
+
+ggplot(bottom_twenty, aes(x = reorder(feature, -importance), y = importance)) + 
+  geom_bar(stat = "identity", fill = "gold", width = 0.5) + 
+  coord_flip() + 
+  labs(title = "Bottom Factors: Importance", x = "Factor", y = "Importance") +
+  theme_minimal()
+
+# Error & Prediction 
+
+# OOB Error
+print(paste("OOB Error Rate:", mean(full_random_forest$err.rate[,"OOB"])))
+
+# Confusion Matrix
+y_hat_class <- predict(full_random_forest, testing_data, type = "class")
+print(confusionMatrix(y_hat_class, testing_data$Success))
+
+# ROC Curve
+y_hat_vote <- predict(full_random_forest, testing_data, type = "vote")
+plot(roc(testing_data$Success, y_hat_vote[,"c1"]), 
+     col="green", main = "ROC Curve: Soccer Success")
+
+# 10-Fold Cross Validation 
+
+n_folds = 10
+N <- nrow(training_data)
+folds_i <- sample(rep(1:n_folds, length.out = N))
+cv_acc <- numeric(n_folds)
+
+for (k in 1:n_folds) {
+  test_i <- which(folds_i == k)
+  training_data.cv <- training_data[-test_i, ]
+  testing_data.cv <- training_data[test_i, ]
+
+  rf.cv <- randomForest(Success ~ ., data = training_data.cv, ntree = 200)
+  
+  y_hat_cv <- predict(rf.cv, testing_data.cv, type="class")
+  
+  # Calculate Accuracy
+  cm <- confusionMatrix(y_hat_cv, testing_data.cv$Success)
+  cv_acc[k] <- cm$overall["Accuracy"]
+}
+
+cm
+print(paste("Mean CV Accuracy:", round(mean(cv_acc), 4)))
+```
+
+```{r}
+team_agg <- player %>%
+  group_by(`Team Name`) %>% 
+  summarise(
+    Total_Goals = sum(totalGoals_value, na.rm = TRUE),
+    Total_Assists = sum(goalAssists_value, na.rm = TRUE),
+    Total_Yellows = sum(yellowCards_value, na.rm = TRUE),
+    Total_Reds = sum(redCards_value, na.rm = TRUE),
+    Total_Appearances = sum(appearances_value, na.rm = TRUE),
+    Total_SubIns = sum(subIns_value, na.rm = TRUE),
+    Total_FoulsCommitted = sum(foulsCommitted_value, na.rm = TRUE),
+    Total_FoulsSuffered = sum(foulsSuffered_value, na.rm = TRUE),
+    Total_OwnGoals = sum(ownGoals_value, na.rm = TRUE),
+    Total_Offsides = sum(offsides_value, na.rm = TRUE),
+    Total_ShotsOnTarget = sum(shotsOnTarget_value, na.rm = TRUE),
+    Total_Shots = sum(totalShots_value, na.rm = TRUE),
+    Total_ShotsFaced = sum(shotsFaced_value, na.rm = TRUE),
+    Total_Saves = sum(saves_value, na.rm = TRUE),
+    Total_Conceded = sum(goalsConceded_value, na.rm = TRUE),
+    Standing = mean(Standing, na.rm = TRUE)
+  )
+
+# Success Target (Top 10 vs Bottom 10)
+team_agg$Success <- ifelse(team_agg$Standing <= 10, 1, 0)
+team_agg$Success <- as.factor(team_agg$Success)
+
+```
+
+```{r}
+#Linear regression Goals and Cards
+lm_team <- lm(Standing ~ Total_Goals + Total_Yellows + Total_Shots, data = team_agg)
+
+summary(lm_team)
+
+```
+
+
+```{r}
+#3 most important from >10 appearances random forest team stat regression 
+
+lm_team_3vars <- lm(Standing ~ Total_Conceded + Total_Shots 
+                    + Total_FoulsCommitted, 
+                    data = team_agg)
+
+print("Team Regression Summary (Goals Conceded, Shots, Fouls)")
+summary(lm_team_3vars)
+
+library(ggplot2)
+library(gridExtra)
+
+#Plot 1: Conceded vs. Standing (Defense)
+p1 <- ggplot(team_agg, aes(x = Total_Conceded, y = Standing)) +
+  geom_point(color = "red", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  scale_y_reverse() +
+  labs(title = "Impact of Goals Conceded", x = "Goals Conceded",
+       y = "Avg Standing") +
+  theme_minimal()
+
+# Plot 2: Shots vs. Standing (Offense)
+p2 <- ggplot(team_agg, aes(x = Total_Shots, y = Standing)) +
+  geom_point(color = "blue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  scale_y_reverse() +
+  labs(title = "Impact of Shots", x = "Total Shots", y = "Avg Standing") +
+  theme_minimal()
+
+# Plot 3: Fouls vs. Standing (Discipline)
+p3 <- ggplot(team_agg, aes(x = Total_FoulsCommitted, y = Standing)) +
+  geom_point(color = "orange", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  scale_y_reverse() +
+  labs(title = "Impact of Fouls", x = "Fouls Committed", y = "Avg Standing") +
+  theme_minimal()
+
+# Plot 4: Actual vs. Predicted (Model Accuracy) 
+predictions <- predict(lm_team_3vars)
+p4 <- ggplot(team_agg, aes(x = predictions, y = Standing)) +
+  geom_point(color = "purple", size = 3) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_y_reverse() +
+  scale_x_reverse() +
+  labs(title = "Model Accuracy: Actual vs Predicted", 
+       x = "Predicted Standing", y = "Actual Standing") +
+  theme_minimal()
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+
+```{r}
+#IGNORE
+#Decision Tree team stats
+
+# Predict Top 10 Status 
+tree_team <- rpart(Success ~ Total_Goals + Total_Assists + Total_Yellows, 
+                   data = team_agg, 
+                   method = "class",
+                   control = rpart.control(minsplit = 5))
+
+rpart.plot(tree_team, main = "Team Level Decision Tree", extra = 106)
+```
+
+
+```{r}
+#PCA on player stats
+
+columns_for_pca <- c(
+    "appearances_value", "subIns_value", "foulsCommitted_value",
+    "foulsSuffered_value", "yellowCards_value", "redCards_value", 
+    "ownGoals_value", "goalAssists_value", "offsides_value", 
+    "shotsOnTarget_value", "totalShots_value", "totalGoals_value", 
+    "shotsFaced_value", "saves_value", "goalsConceded_value"
+)
+
+player_clean <- player[, columns_for_pca]
+player_clean <- na.omit(player_clean)
+
+full_clean <- player %>%
+  select(all_of(c("Standing", columns_for_pca))) %>%
+  na.omit()
+
+X <- full_clean[, -1] 
+Y <- full_clean$Standing 
+data <- data.frame(Y, X)
+names(data)[1] = "Standing"
+
+set.seed(123)
+train.ix <- sample(nrow(data), floor(nrow(data)) * 4 / 5 )
+data.train <- data[train.ix,]
+data.test <- data[-train.ix,]
+
+trainX <- as.matrix(data.train[,-1])
+testX <- as.matrix(data.test[,-1])
+trainY <- as.matrix(data.train[,1])
+testY <- as.matrix(data.test[,1])
+
+
+# Implement PCA
+if(!require("FactoMineR")) install.packages("FactoMineR")
+if(!require("factoextra")) install.packages("factoextra")
+library(FactoMineR)
+library(factoextra)
+
+pca.player <- PCA(trainX, graph = FALSE, ncp = 10, scale.unit = TRUE) 
+
+
+# Scree Plot  
+fviz_screeplot(pca.player, addlabels = TRUE, ylim = c(0, 50),
+               main = "Scree Plot: Player Stats")
+
+var <- get_pca_var(pca.player)
+head(var$contrib)
+
+# Visualize PC1
+fviz_contrib(pca.player, choice = "var", axes = 1, top = 20,
+             title = "Contribution to PC1")
+
+# Visualize  PC2
+fviz_contrib(pca.player, choice = "var", axes = 2, top = 20,
+             title = "Contribution to PC2")
+
+
+# PCR (Principal Component Regression)
+
+trainX_pca <- pca.player$ind$coord 
+trainX_pca <- data.frame(trainX_pca)
+names(trainX_pca) <- paste0("PC", 1:10)
+
+testX_pca <- predict(pca.player, newdata = testX)
+testX_pca <- data.frame(testX_pca$coord)
+names(testX_pca) <- paste0("PC", 1:10)
+
+tempData <- data.frame(Standing = trainY, trainX_pca)
+
+lm.pca <- lm(Standing ~ ., data = tempData)
+summary(lm.pca)
+
+y_hat <- predict(lm.pca, testX_pca)
+
+print(paste("Correlation:", cor(y_hat, testY)))
+mse <- mean((y_hat - testY)^2)
+print(paste("MSE:", mse))
+
+autoplot(lm.pca, which = 1:6, ncol = 3, label.size = 5)
+```
+```{r}
+# Visualize PC10
+fviz_contrib(pca.player, choice = "var", axes = 10, top = 20, 
+             title = "Contribution to PC10")
+
+# Visualize PC2 
+fviz_contrib(pca.player, choice = "var", axes = 2, top = 20,
+             title = "Contribution to PC2")
+
+lm_hybrid <- lm(Standing ~ totalGoals_value + yellowCards_value + 
+                           goalsConceded_value + foulsSuffered_value, 
+                data = player)
+
+summary(lm_hybrid)
+```
+
+```{r}
+lm_hybrid <- lm(Standing ~ saves_value + shotsFaced_value +             
+                           goalsConceded_value + foulsSuffered_value, 
+                data = player)
+
+summary(lm_hybrid)
+
+autoplot(lm_hybrid, which = 1:6, ncol = 3, label.size = 5)
+```
