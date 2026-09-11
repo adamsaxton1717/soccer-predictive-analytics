@@ -17,8 +17,3 @@
 * **Validation:** 10-Fold Cross-Validation, Out-of-Bag (OOB) error estimation, ROC/AUC Curves (`pROC`, `caret`)
 * **Visualization:** `ggplot2`, `factoextra`, `gridExtra`
 
-## Getting Started
-
-1. **Clone the repository:**
-   ```bash
-   git clone [https://github.com/YOUR_USERNAME/soccer-predictive-analytics.git](https://github.com/YOUR_USERNAME/soccer-predictive-analytics.git)
