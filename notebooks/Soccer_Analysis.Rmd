@@ -297,7 +297,7 @@ ggplot(cv_summary, aes(x = min_appearances, y = mean_auc)) +
   ) + theme_minimal()
 
 # Plot accuracy across appearance thresholds
-ggplot(
+auc_plot <- ggplot(
   cv_summary,
   aes(x = min_appearances, y = mean_accuracy)
 ) +
@@ -323,6 +323,16 @@ ggplot(
     y = "Mean Accuracy"
   ) +
   theme_minimal()
+
+auc_plot 
+
+ggsave(
+  here("figures", "appearance_threshold_auc.png"),
+  plot = auc_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
 ```
 
 Filtering out players with low appearances did improve model performance. At
@@ -370,7 +380,7 @@ importance_df <- data.frame(feature = rownames(importance_matrix),
                               importance_matrix[, "MeanDecreaseGini"]) %>%
   arrange(desc(mean_decrease_accuracy))
 
-importance_df %>%
+importance_plot <- importance_df %>%
   slice_max(order_by = mean_decrease_accuracy, n = 10) %>%
   ggplot(
     aes(
@@ -387,6 +397,16 @@ importance_df %>%
     y = "Mean Decrease Accuracy"
   ) +
   theme_minimal()
+
+importance_plot 
+
+ggsave(
+  here("figures", "feature_importance.png"),
+  plot = importance_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
 ```
 
 The strongest predictor in the final Random Forest is goalsConceded,
@@ -538,6 +558,8 @@ pca_player <- prcomp(
 )
 
 summary(pca_player)
+
+
 ```
 
 ```{r pca-loadings}
@@ -580,7 +602,7 @@ pca_summary <- data.frame(
   cumulative_variance = cumsum(pca_variance)
 )
 
-ggplot(
+pca_plot <- ggplot(
   pca_summary,
   aes(x = component, y = cumulative_variance)
 ) +
@@ -602,6 +624,16 @@ ggplot(
     y = "Cumulative Variance Explained"
   ) +
   theme_minimal()
+
+pca_plot 
+
+ggsave(
+  here("figures", "pca_cumulative_variance.png"),
+  plot = pca_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
 ```
 The first three principal components explain about 66% of the total variance in
 the player statistics, the first five PCs explain almost 80%.
