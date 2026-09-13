@@ -1,7 +1,7 @@
 ---
-title: "Saxton"
+title: "Soccer_Analysis"
 author: "Adam Saxton"
-date: "2025-12-03"
+date: "2026-09-10"
 output: pdf_document
 ---
 
@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r}
-# Load Libraries
+# Libraries
 library(readxl)
 library(randomForest)
 library(dplyr)
@@ -19,56 +19,550 @@ library(caret)
 library(ggplot2) 
 library(rpart)
 library(rpart.plot)
-require("ggfortify")
+library(here)
+library(ggfortify)
 
-#Load Data
-team <- read_excel("Soccer_Data.xlsx", sheet = 2)
-player <- read_excel("Soccer_Data.xlsx", sheet = 1)
 
-colnames(team)
-colnames(player)
+# Player and team data
+team <- read_excel(here("data", "Soccer_Data.xlsx"), sheet = 2)
+player <- read_excel(here("data", "Soccer_Data.xlsx"), sheet = 1)
 
-# Success = Top 10 Standing
-player$Success <- ifelse(player$Standing <= 10, 1, 0)
-player$Success <- as.factor(player$Success)
-team$Success <- ifelse(team$teamRank <= 10, 1, 0)
-
+# Binary Outcome: 1 = Top-10 Finish, 0 = Bottom-10 Finish
+player$Success <- factor(ifelse(player$Standing <= 10, 1, 0))
+team$Success <- factor(ifelse(team$teamRank <= 10, 1, 0))
 ```
 
 ```{r}
-# ALL appearances
-
-# Select Numeric Predictors
-columns_to_keep <- c("Success", "totalGoals_value", "goalAssists_value", 
-                     "yellowCards_value", "redCards_value", "appearances_value", 
-                     "totalShots_value", "shotsOnTarget_value", "saves_value", 
-                     "subIns_value", "foulsCommitted_value", "foulsSuffered_value",
+# Numeric Predictors and keep teamId for validation
+columns_to_keep <- c("teamId", "Success", "totalGoals_value", 
+                     "goalAssists_value", "yellowCards_value", 
+                     "redCards_value", "appearances_value", 
+                     "totalShots_value", "shotsOnTarget_value", 
+                     "saves_value", "subIns_value", 
+                     "foulsCommitted_value", "foulsSuffered_value",
                      "ownGoals_value", "offsides_value", 
                      "goalsConceded_value", "shotsFaced_value")
 
 # Clean Data
-player_data_ready <- player %>% select(all_of(columns_to_keep)) %>% na.omit()
-X <- player_data_ready %>% select(-Success)
-Y <- player_data_ready$Success
+player_data_ready <- player %>% select(all_of(columns_to_keep)) %>% 
+                     na.omit() %>%
+                     mutate(
+                       Success = factor(
+                        paste0("c", Success), 
+                        levels = c("c0", "c1")
+                       )
+                     )
 
-# Factorize explicitly (c0 vs c1)
-Y <- paste0("c", Y)
-Y <- as.factor(Y)
-data <- data.frame(X, Success = Y)
+# One row per team with Top-10 / Bottom-10 label
+team_labels <-  player_data_ready %>% distinct(teamId, Success)
 
-# Split Training/Testing
+# Stratified team-level train/test split
 set.seed(123)
-train.ix <- sample(nrow(data), floor(nrow(data)/2))
-training_data <- data[train.ix,]
-testing_data <- data[-train.ix,]
 
-#Random Forest
+train_teams <- team_labels %>% group_by(Success) %>% slice_sample(n = 7) %>%
+               pull(teamId)
+test_teams <- setdiff(team_labels$teamId, train_teams)
 
-# Fit the Model
+training_data <- player_data_ready %>% filter(teamId %in% train_teams) %>%
+                 select(-teamId)
+testing_data <- player_data_ready %>% filter(teamId %in% test_teams) %>%
+                 select(-teamId)
+
+# Random Forest
 full_random_forest <- randomForest(Success ~ ., data = training_data, 
                                    ntree = 250, nodesize = 20, mtry = 5)
+
 print(full_random_forest)
 
+# Final OOB Error
+oob_error <- tail(full_random_forest$err.rate[,"OOB"], 1)
+cat("Final OOB Error Rate:", round(oob_error, 4), "\n")
+
+# Test-set classification
+y_hat_class <- predict(full_random_forest, testing_data, type = "class")
+
+
+# Confusion matrix
+test_cm <- confusionMatrix(y_hat_class, testing_data$Success, positive = "c1")
+cat("Test Accuracy:", round(test_cm$overall["Accuracy"],4), "\n")
+
+# Test-set probabilities 
+y_hat_prob <- predict(full_random_forest, testing_data, type = "prob")[, "c1"]
+
+# ROC / AUC
+roc_obj <- roc(testing_data$Success, y_hat_prob, levels = c("c0", "c1"),
+               direction = "<")
+plot(roc_obj, main = "ROC Curve: Top-10 Team Classification")
+auc(roc_obj)
+
+```
+
+```{r}
+
+run_rf_model <- function(player_data, min_appearances, train_teams, test_teams){
+  
+  # Filter players by minimum appearance threshold
+  filtered_data <- player_data %>% filter(appearances_value >= min_appearances)
+  
+  # Training set using predetermined teams
+  training_data <- filtered_data %>% filter(teamId %in% train_teams) %>%
+                   select(-teamId)
+  
+  # Testing set using predetermined teams
+  testing_data <- filtered_data %>% filter(teamId %in% test_teams) %>%
+                   select(-teamId)
+  
+  # Random Forest
+  random_forest <- randomForest(Success ~ ., data = training_data, 
+                                ntree = 250, nodesize = 20, mtry = 5)
+  
+  # Final OOB Error
+  oob_error <- tail(full_random_forest$err.rate[,"OOB"], 1)
+  
+  # Test prediction
+  y_hat_class <- predict(random_forest, testing_data, type = "class")
+  
+  # Test accuracy
+  test_accuracy <- confusionMatrix(y_hat_class, testing_data$Success, 
+                                   positive = "c1")$overall["Accuracy"]
+  
+  # Predicted probability of Top-10 class
+  y_hat_prob <- predict(random_forest, testing_data, type = "prob")[, "c1"]
+  
+  # ROC / AUC
+  roc_obj <- roc(testing_data$Success, y_hat_prob, levels = c("c0", "c1"),
+               direction = "<")
+  test_auc <- as.numeric(auc(roc_obj))
+  
+  # Final OOB Error
+  oob_error <- tail(random_forest$err.rate[,"OOB"], 1)
+ 
+  # Return model results
+  data.frame(min_appearances = min_appearances,
+             n_training_players = nrow(training_data),
+             n_testing_players = nrow(testing_data),
+             test_accuracy = as.numeric(test_accuracy),
+             test_auc = test_auc,
+             oob_error = as.numeric(oob_error)
+             )
+}
+```
+
+
+```{r}
+
+# All appearance thresholds tested
+appearances_thresholds <- c(0, 3, 10, 20, 25)
+
+# run random forest for all appearance thresholds
+all_appearance_results <- do.call(rbind, 
+                                  lapply(appearances_thresholds, 
+                                         function(x){
+                                           run_rf_model(
+                                             player_data = player_data_ready,
+                                             min_appearances = x,
+                                             train_teams = train_teams,
+                                             test_teams = test_teams
+                                           )
+                                         }
+                                        )
+                                  )
+
+# output final results
+all_appearance_results
+```
+
+```{r}
+# Stratified team-level folds 
+set.seed(123)
+
+team_folds <- team_labels %>% group_by(Success) %>% 
+              mutate(fold = sample(rep(1:5, length.out = n())) 
+                    ) %>%
+              ungroup()
+                     
+run_grouped_cv <- function(player_data, min_appearances, team_folds) {
+  
+  fold_results <- data.frame()
+  all_team_predictions <- data.frame()
+  
+  for (k in 1:5){
+    
+    # Teams assigned to fold become test set
+    test_teams <- team_folds %>% filter(fold == k) %>% pull(teamId)
+    train_teams <- team_folds %>% filter(fold != k) %>% pull(teamId)
+    
+    # Appearance cutoff
+    filtered_data <- player_data %>% filter(appearances_value >= min_appearances)
+    
+    
+    # Preserve test team IDs before removing teamId from predictors
+    test_team_ids <- filtered_data %>%
+                     filter(teamId %in% test_teams) %>%
+                     pull(teamId)
+    
+    # Training data: keep all predictor columns, remove only teamId
+    training_data <- filtered_data %>%
+      filter(teamId %in% train_teams) %>%
+      dplyr::select(-teamId)
+
+    # Testing data: keep all predictor columns, remove only teamId
+    testing_data <- filtered_data %>%
+      filter(teamId %in% test_teams) %>%
+      dplyr::select(-teamId)
+    
+    # Random Forest
+    set.seed(123)
+    
+    random_forest <- randomForest(Success ~ ., data = training_data, 
+                                  ntree = 250, nodesize = 20, mtry = 5)
+    
+    # Class prediction
+    y_hat_class <- predict(random_forest, testing_data, type = "class")
+    
+    # Player-level accuracy
+    fold_accuracy <- confusionMatrix(y_hat_class, testing_data$Success, 
+                                     positive = "c1")$overall["Accuracy"]
+    
+    # Predicted probability of Top-10 class
+    y_hat_prob <- predict(random_forest, testing_data, type = "prob")[, "c1"]
+    
+    # Aggregate player probabilities to team level
+    team_predictions <- data.frame(
+      teamId = test_team_ids,
+      actual = testing_data$Success,
+      predicted_prob = y_hat_prob
+    ) %>%
+      group_by(teamId) %>%
+      summarise(
+        actual = first(actual),
+        predicted_prob = mean(predicted_prob),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        fold = k,
+        min_appearances = min_appearances
+      )
+    
+    all_team_predictions <- rbind(
+      all_team_predictions,
+      team_predictions
+    )
+    
+    # Player-level ROC / AUC
+    roc_obj <- roc(testing_data$Success, y_hat_prob, levels = c("c0", "c1"),
+                 direction = "<")
+    fold_auc <- as.numeric(auc(roc_obj))
+    
+   # Save player-level fold results
+    fold_results <- rbind(
+      fold_results,
+      data.frame(
+        fold = k,
+        min_appearances = min_appearances,
+        n_training_players = nrow(training_data),
+        n_testing_players = nrow(testing_data),
+        accuracy = as.numeric(fold_accuracy),
+        auc = fold_auc
+      )
+    )
+  }
+
+  list(
+    fold_results = fold_results,
+    team_predictions = all_team_predictions
+  )
+}
+
+
+```
+
+```{r}
+cv_20 <- run_grouped_cv(
+  player_data = player_data_ready,
+  min_appearances = 20,
+  team_folds = team_folds
+)
+
+cv_20$fold_results
+
+cv_20$team_predictions
+```
+```{r}
+team_results_20 <- cv_20$team_predictions
+
+# Convert probabilities to predicted class
+team_results_20 <- team_results_20 %>%
+  mutate(
+    predicted_class = factor(
+      ifelse(predicted_prob >= 0.5, "c1", "c0"),
+      levels = c("c0", "c1")
+    )
+  )
+
+# Team-level confusion matrix / accuracy
+team_cm_20 <- confusionMatrix(
+  team_results_20$predicted_class,
+  team_results_20$actual,
+  positive = "c1"
+)
+
+team_cm_20
+
+team_roc_20 <- roc(
+  team_results_20$actual,
+  team_results_20$predicted_prob,
+  levels = c("c0", "c1"),
+  direction = "<"
+)
+
+team_auc_20 <- as.numeric(auc(team_roc_20))
+
+team_auc_20
+
+team_results_20 %>%
+  mutate(
+    correct = predicted_class == actual
+  ) %>%
+  arrange(desc(predicted_prob))
+
+```
+```{r}
+
+team_threshold_results <- data.frame()
+
+for (threshold in appearances_thresholds) {
+
+  cv_model <- run_grouped_cv(
+    player_data = player_data_ready,
+    min_appearances = threshold,
+    team_folds = team_folds
+  )
+
+  team_predictions <- cv_model$team_predictions %>%
+    mutate(
+      predicted_class = factor(
+        ifelse(predicted_prob >= 0.5, "c1", "c0"),
+        levels = c("c0", "c1")
+      )
+    )
+
+  # Team-level accuracy
+  team_accuracy <- mean(
+    team_predictions$predicted_class == team_predictions$actual
+  )
+
+  # Team-level AUC
+  team_roc <- roc(
+    team_predictions$actual,
+    team_predictions$predicted_prob,
+    levels = c("c0", "c1"),
+    direction = "<"
+  )
+
+  team_auc <- as.numeric(auc(team_roc))
+
+  team_threshold_results <- rbind(
+    team_threshold_results,
+    data.frame(
+      min_appearances = threshold,
+      team_accuracy = team_accuracy,
+      team_auc = team_auc
+    )
+  )
+}
+
+team_threshold_results
+
+sapply(
+  appearances_thresholds,
+  function(threshold) {
+    result <- run_grouped_cv(
+      player_data_ready,
+      threshold,
+      team_folds
+    )
+  }
+)
+```
+
+```{r}
+# All appearance thresholds tested
+appearances_thresholds <- c(0, 3, 10, 20, 25)
+
+# run 5-fold cross validation all appearance thresholds
+cv_results <- do.call(rbind, lapply(appearances_thresholds, 
+                                    function(x){
+                                      run_grouped_cv(
+                                        player_data = player_data_ready,
+                                        min_appearances = x,
+                                        team_folds = team_folds
+                                      )
+                                     }
+                                     )
+                     )
+
+# output summary results
+cv_summary <- cv_results %>% group_by(min_appearances) %>% 
+              summarize(
+                mean_accuracy = mean(accuracy),
+                sd_accuracy = sd(accuracy),
+                mean_auc = mean(auc),
+                sd_auc = sd(auc),
+                .groups = "drop"
+              )
+
+cv_summary
+
+# Plot mean AUC across appearance thresholds
+ggplot(cv_summary, aes(x = min_appearances, y = mean_auc)) +
+  geom_line(linewidth = 1) + geom_point(size = 3) +
+  geom_errorbar(
+    aes(
+      ymin = mean_auc - sd_auc,
+      ymax = mean_auc + sd_auc
+        ),
+        width = 1) +
+        scale_x_continuous(breaks = appearances_thresholds) +
+  labs(
+    title = "Model Performance by Minimum Appearance Threshold",
+    subtitle = "5-fold cross validation grouped by team",
+    x = "Minimum Player Appearances",
+    y = "Mean AUC"
+  ) + theme_minimal()
+
+# Plot accuracy across appearance thresholds
+ggplot(
+  cv_summary,
+  aes(x = min_appearances, y = mean_accuracy)
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(
+    aes(
+      ymin = mean_accuracy - sd_accuracy,
+      ymax = mean_accuracy + sd_accuracy
+    ),
+    width = 1
+  ) +
+  scale_x_continuous(
+    breaks = appearances_thresholds
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format()
+  ) +
+  labs(
+    title = "Classification Accuracy by Minimum Appearance Threshold",
+    subtitle = "5-fold cross-validation grouped by team",
+    x = "Minimum Player Appearances",
+    y = "Mean Accuracy"
+  ) +
+  theme_minimal()
+
+cv_results %>%
+  filter(min_appearances %in% c(20, 25)) %>%
+  select(
+    min_appearances,
+    fold,
+    n_testing_players,
+    accuracy,
+    auc
+  )
+```
+
+```{r}
+# 10+ appearance threshold 
+final_data <- player_data_ready %>% filter(appearances_value >= 10) %>% 
+              select(-teamId)
+
+set.seed(123)
+
+final_random_forest <- randomForest(Success ~ ., data = final_data, 
+                                  ntree = 500, nodesize = 20, mtry = 5,
+                                  importance = TRUE)
+
+final_random_forest
+
+importance_matrix <- importance(final_random_forest)
+
+importance_df <- data.frame(feature = rownames(importance_matrix), 
+                            mean_decrease_accuracy = 
+                              importance_matrix[, "MeanDecreaseAccuracy"],
+                            mean_decrease_gini = 
+                              importance_matrix[, "MeanDecreaseGini"]) %>%
+  arrange(desc(mean_decrease_accuracy))
+
+importance_df
+```
+
+```{r}
+# look into goalsConceded
+
+final_data %>%
+  summarise(
+    n = n(),
+    goals_conceded_zero = sum(goalsConceded_value == 0),
+    goals_conceded_positive = sum(goalsConceded_value > 0),
+    pct_zero = mean(goalsConceded_value == 0)
+  )
+
+final_data %>%
+  summarise(
+    saves_zero = sum(saves_value == 0),
+    saves_positive = sum(saves_value > 0),
+    shots_faced_zero = sum(shotsFaced_value == 0),
+    shots_faced_positive = sum(shotsFaced_value > 0)
+  )
+
+
+final_data %>%
+  select(
+    goalsConceded_value,
+    saves_value,
+    shotsFaced_value
+  ) %>%
+  cor()
+```
+```{r}
+# goalsConceded_value 
+
+player %>%
+  filter(appearances_value >= 10) %>%
+  group_by(teamId) %>%
+  summarise(
+    n_players = n(),
+    n_unique_goals_conceded = n_distinct(goalsConceded_value),
+    min_goals_conceded = min(goalsConceded_value, na.rm = TRUE),
+    max_goals_conceded = max(goalsConceded_value, na.rm = TRUE)
+  )
+
+cor(
+  final_data$appearances_value,
+  final_data$goalsConceded_value
+)
+
+
+player %>%
+  filter(
+    teamId == first(teamId),
+    appearances_value >= 10
+  ) %>%
+  select(
+    athleteId,
+    appearances_value,
+    goalsConceded_value,
+    totalGoals_value,
+    goalAssists_value,
+    saves_value,
+    shotsFaced_value
+  ) %>%
+  arrange(desc(appearances_value))
+
+
+```
+
+
+```{r}
 
 #Extract values
 imp_vals <- importance(full_random_forest)
@@ -99,19 +593,14 @@ ggplot(bottom_twenty, aes(x = reorder(feature, -importance), y = importance)) +
 
 #Error & Prediction
 
-# OOB Error
-print(paste("OOB Error Rate:", mean(full_random_forest$err.rate[,"OOB"])))
-
-# Confusion Matrix
-y_hat_class <- predict(full_random_forest, testing_data, type = "class")
-print(confusionMatrix(y_hat_class, testing_data$Success))
 
 # ROC Curve
 y_hat_vote <- predict(full_random_forest, testing_data, type = "vote")
 plot(roc(testing_data$Success, y_hat_vote[,"c1"]), 
      col="green", main = "ROC Curve: Soccer Success")
 
-# 10-Fold Cross Validation 
+# 10-Fold Cross Validation
+
 
 n_folds = 10
 N <- nrow(training_data)
@@ -128,14 +617,15 @@ for (k in 1:n_folds) {
   
   y_hat_cv <- predict(rf.cv, testing_data.cv, type="class")
   
-  # Calculate Accuracy
-  cm <- confusionMatrix(y_hat_cv, testing_data.cv$Success)
+  
   cv_acc[k] <- cm$overall["Accuracy"]
 }
 
 cm
 print(paste("Mean CV Accuracy:", round(mean(cv_acc), 4)))
 ```
+
+
 ```{r}
 # >10 appearances
 
@@ -558,6 +1048,11 @@ print(">25 Appearances")
 cm
 print(paste("Mean CV Accuracy:", round(mean(cv_acc), 4)))
 ```
+
+
+
+
+
 ```{r}
 # Linear Regression GF v GA
 lm_model <- lm(teamRank ~ gf + ga, data = team)
